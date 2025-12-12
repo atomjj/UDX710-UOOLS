@@ -12,10 +12,6 @@
 extern "C" {
 #endif
 
-/* 通用响应函数 */
-void send_json_response(struct mg_connection *c, int status, const char *json);
-void send_error_response(struct mg_connection *c, int status, const char *error);
-
 /* API 处理器 */
 void handle_info(struct mg_connection *c, struct mg_http_message *hm);
 void handle_execute_at(struct mg_connection *c, struct mg_http_message *hm);

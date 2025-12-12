@@ -12,6 +12,7 @@
 #include "advanced.h"
 #include "dbus_core.h"
 #include "exec_utils.h"
+#include "http_utils.h"
 
 /* 频段映射结构 */
 typedef struct {
@@ -88,13 +89,7 @@ static void parse_bands_info(const char *output4G, const char *output5G, int *ba
 
 /* GET /api/bands - 获取频段状态 */
 void handle_get_bands(struct mg_connection *c, struct mg_http_message *hm) {
-    /* OPTIONS 预检 */
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     char *result4G = NULL, *result5G = NULL;
     int bands[16] = {0};
@@ -153,10 +148,7 @@ void handle_get_bands(struct mg_connection *c, struct mg_http_message *hm) {
         bands[14] ? "true" : "false", bands[15] ? "true" : "false"
     );
 
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "%s", json);
+    HTTP_OK(c, json);
 }
 
 
@@ -205,12 +197,7 @@ static int parse_bands_array(const char *json, char bands[][32], int max_bands) 
 
 /* POST /api/lock_bands - 锁定频段 */
 void handle_lock_bands(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     char bands[32][32] = {{0}};
     int band_count = parse_bands_array(hm->body.buf, bands, 32);
@@ -243,7 +230,7 @@ void handle_lock_bands(struct mg_connection *c, struct mg_http_message *hm) {
     /* 执行命令序列 */
     /* 1. 关闭设备 */
     if (execute_at("AT+SFUN=5", &result) != 0) {
-        mg_http_reply(c, 500, "Access-Control-Allow-Origin: *\r\n", "{\"error\":\"关闭设备失败\"}");
+        HTTP_ERROR(c, 500, "关闭设备失败");
         if (result) g_free(result);
         return;
     }
@@ -281,28 +268,20 @@ void handle_lock_bands(struct mg_connection *c, struct mg_http_message *hm) {
     if (result) g_free(result);
 
     printf("频段锁定成功\n");
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "{\"success\":true,\"message\":\"频段锁定成功\"}");
+    HTTP_OK(c, "{\"success\":true,\"message\":\"频段锁定成功\"}");
 }
 
 
 /* POST /api/unlock_bands - 解锁所有频段 */
 void handle_unlock_bands(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     printf("开始解锁所有频段...\n");
     char *result = NULL;
 
     /* 1. 关闭设备 */
     if (execute_at("AT+SFUN=5", &result) != 0) {
-        mg_http_reply(c, 500, "Access-Control-Allow-Origin: *\r\n", "{\"error\":\"关闭设备失败\"}");
+        HTTP_ERROR(c, 500, "关闭设备失败");
         if (result) g_free(result);
         return;
     }
@@ -329,10 +308,7 @@ void handle_unlock_bands(struct mg_connection *c, struct mg_http_message *hm) {
     if (result) g_free(result);
 
     printf("频段解锁成功\n");
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "{\"success\":true,\"message\":\"频段解锁成功\"}");
+    HTTP_OK(c, "{\"success\":true,\"message\":\"频段解锁成功\"}");
 }
 
 /* 解析小区数据 (复用 handlers.c 中的函数) */
@@ -363,12 +339,7 @@ static int is_5g_network(void) {
 
 /* GET /api/cells - 获取小区信息 */
 void handle_get_cells(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     printf("开始获取小区信息...\n");
     char *result = NULL;
@@ -473,21 +444,13 @@ void handle_get_cells(struct mg_connection *c, struct mg_http_message *hm) {
     snprintf(json + json_len, sizeof(json) - json_len, "]}");
     printf("小区信息获取完成，共 %d 个小区\n", cell_count);
 
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "%s", json);
+    HTTP_OK(c, json);
 }
 
 
 /* POST /api/lock_cell - 锁定小区 */
 void handle_lock_cell(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     char technology[32] = {0}, arfcn[32] = {0}, pci[32] = {0};
 
@@ -556,20 +519,12 @@ void handle_lock_cell(struct mg_connection *c, struct mg_http_message *hm) {
     if (result) g_free(result);
 
     printf("小区锁定成功\n");
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "{\"Code\":0,\"Error\":\"\",\"Data\":{\"success\":true,\"message\":\"小区锁定成功\"}}");
+    HTTP_OK(c, "{\"Code\":0,\"Error\":\"\",\"Data\":{\"success\":true,\"message\":\"小区锁定成功\"}}");
 }
 
 /* POST /api/unlock_cell - 解锁小区 */
 void handle_unlock_cell(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     printf("开始解锁小区...\n");
     char *result = NULL;
@@ -599,8 +554,5 @@ void handle_unlock_cell(struct mg_connection *c, struct mg_http_message *hm) {
     if (result) g_free(result);
 
     printf("小区解锁成功\n");
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "{\"Code\":0,\"Error\":\"\",\"Data\":{\"success\":true,\"message\":\"小区解锁成功\"}}");
+    HTTP_OK(c, "{\"Code\":0,\"Error\":\"\",\"Data\":{\"success\":true,\"message\":\"小区解锁成功\"}}");
 }

@@ -14,29 +14,12 @@
 #include "exec_utils.h"
 #include "airplane.h"
 #include "modem.h"
-
-/* 检查请求方法 */
-static int check_method(struct mg_connection *c, struct mg_http_message *hm, const char *method) {
-    /* 处理 OPTIONS 预检请求 */
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return 0;
-    }
-    
-    size_t method_len = strlen(method);
-    if (hm->method.len != method_len || memcmp(hm->method.buf, method, method_len) != 0) {
-        send_error_response(c, 405, "Method not allowed");
-        return 0;
-    }
-    return 1;
-}
+#include "http_utils.h"
 
 
 /* GET /api/info - 获取系统信息 */
 void handle_info(struct mg_connection *c, struct mg_http_message *hm) {
-    if (!check_method(c, hm, "GET")) return;
+    HTTP_CHECK_GET(c, hm);
 
     SystemInfo info;
     char json[4096];
@@ -89,10 +72,7 @@ void handle_info(struct mg_connection *c, struct mg_http_message *hm) {
         info.network_type, info.network_band, info.qci, info.downlink_rate, info.uplink_rate
     );
 
-    mg_http_reply(c, 200, 
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n", 
-        "%s", json);
+    HTTP_OK(c, json);
 }
 
 /* JSON 字符串转义 - 处理特殊字符 */
@@ -118,41 +98,21 @@ static void json_escape_string(const char *src, char *dst, size_t dst_size) {
 
 /* POST /api/at - 执行 AT 命令 */
 void handle_execute_at(struct mg_connection *c, struct mg_http_message *hm) {
-    if (!check_method(c, hm, "POST")) return;
+    HTTP_CHECK_POST(c, hm);
 
     char cmd[256] = {0};
     char *result = NULL;
     char response[4096];
 
-    /* 解析 JSON 请求体: {"command": "AT..."} */
-    struct mg_str json = hm->body;
-    
-    /* 简单 JSON 解析 - 提取 command 字段 */
-    char *cmd_start = strstr(json.buf, "\"command\"");
-    if (cmd_start) {
-        cmd_start = strchr(cmd_start, ':');
-        if (cmd_start) {
-            cmd_start = strchr(cmd_start, '"');
-            if (cmd_start) {
-                cmd_start++;
-                char *cmd_end = strchr(cmd_start, '"');
-                if (cmd_end) {
-                    size_t len = cmd_end - cmd_start;
-                    if (len < sizeof(cmd)) {
-                        memcpy(cmd, cmd_start, len);
-                    }
-                }
-            }
-        }
+    /* 使用mongoose内置JSON解析 */
+    char *cmd_str = mg_json_get_str(hm->body, "$.command");
+    if (cmd_str) {
+        strncpy(cmd, cmd_str, sizeof(cmd) - 1);
+        free(cmd_str);
     }
 
     if (strlen(cmd) == 0) {
-        snprintf(response, sizeof(response), 
-            "{\"Code\":1,\"Error\":\"命令不能为空\",\"Data\":null}");
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "%s", response);
+        HTTP_OK(c, "{\"Code\":1,\"Error\":\"命令不能为空\",\"Data\":null}");
         return;
     }
 
@@ -168,7 +128,6 @@ void handle_execute_at(struct mg_connection *c, struct mg_http_message *hm) {
     /* 执行 AT 命令 */
     if (execute_at(cmd, &result) == 0) {
         printf("AT 命令执行成功: %s\n", result);
-        /* 转义 JSON 特殊字符 */
         char escaped[2048];
         json_escape_string(result ? result : "", escaped, sizeof(escaped));
         snprintf(response, sizeof(response),
@@ -182,10 +141,7 @@ void handle_execute_at(struct mg_connection *c, struct mg_http_message *hm) {
             "{\"Code\":1,\"Error\":\"%s\",\"Data\":null}", escaped_err);
     }
 
-    mg_http_reply(c, 200, 
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n", 
-        "%s", response);
+    HTTP_OK(c, response);
 }
 
 
@@ -211,182 +167,122 @@ static int extract_json_string(const char *json, const char *key, char *value, s
 
 /* POST /api/set_network - 设置网络模式 */
 void handle_set_network(struct mg_connection *c, struct mg_http_message *hm) {
-    if (!check_method(c, hm, "POST")) return;
+    HTTP_CHECK_POST(c, hm);
 
     char mode[32] = {0};
     char slot[16] = {0};
 
-    /* 解析 JSON: {"mode": "...", "slot": "..."} */
-    extract_json_string(hm->body.buf, "mode", mode, sizeof(mode));
-    extract_json_string(hm->body.buf, "slot", slot, sizeof(slot));
+    /* 使用mongoose内置JSON解析 */
+    char *mode_str = mg_json_get_str(hm->body, "$.mode");
+    char *slot_str = mg_json_get_str(hm->body, "$.slot");
+    if (mode_str) { strncpy(mode, mode_str, sizeof(mode) - 1); free(mode_str); }
+    if (slot_str) { strncpy(slot, slot_str, sizeof(slot) - 1); free(slot_str); }
 
     if (strlen(mode) == 0) {
-        mg_http_reply(c, 400, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"error\":\"Mode parameter is required\"}");
+        HTTP_ERROR(c, 400, "Mode parameter is required");
         return;
     }
 
     if (!is_valid_network_mode(mode)) {
-        mg_http_reply(c, 400, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"error\":\"Invalid mode value\"}");
+        HTTP_ERROR(c, 400, "Invalid mode value");
         return;
     }
 
     if (strlen(slot) > 0 && !is_valid_slot(slot)) {
-        mg_http_reply(c, 400, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"error\":\"Invalid slot value. Must be 'slot1' or 'slot2'\"}");
+        HTTP_ERROR(c, 400, "Invalid slot value. Must be 'slot1' or 'slot2'");
         return;
     }
 
     if (set_network_mode_for_slot(mode, strlen(slot) > 0 ? slot : NULL) == 0) {
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"status\":\"success\",\"message\":\"Network mode updated successfully\"}");
+        HTTP_SUCCESS(c, "Network mode updated successfully");
     } else {
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"status\":\"error\",\"message\":\"Failed to update network mode\"}");
+        HTTP_OK(c, "{\"status\":\"error\",\"message\":\"Failed to update network mode\"}");
     }
 }
 
 /* POST /api/switch - 切换 SIM 卡槽 */
 void handle_switch(struct mg_connection *c, struct mg_http_message *hm) {
-    if (!check_method(c, hm, "POST")) return;
+    HTTP_CHECK_POST(c, hm);
 
     char slot[16] = {0};
-
-    /* 解析 JSON: {"slot": "slot1"} */
-    extract_json_string(hm->body.buf, "slot", slot, sizeof(slot));
+    char *slot_str = mg_json_get_str(hm->body, "$.slot");
+    if (slot_str) { strncpy(slot, slot_str, sizeof(slot) - 1); free(slot_str); }
 
     if (strlen(slot) == 0) {
-        mg_http_reply(c, 400, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"error\":\"Slot parameter is required\"}");
+        HTTP_ERROR(c, 400, "Slot parameter is required");
         return;
     }
 
     if (!is_valid_slot(slot)) {
-        mg_http_reply(c, 400, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"error\":\"Invalid slot value. Must be 'slot1' or 'slot2'\"}");
+        HTTP_ERROR(c, 400, "Invalid slot value. Must be 'slot1' or 'slot2'");
         return;
     }
 
+    char response[128];
     if (switch_slot(slot) == 0) {
-        char response[128];
         snprintf(response, sizeof(response), 
             "{\"status\":\"success\",\"message\":\"Slot switched to %s successfully\"}", slot);
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "%s", response);
     } else {
-        char response[128];
         snprintf(response, sizeof(response), 
             "{\"status\":\"error\",\"message\":\"Failed to switch slot to %s\"}", slot);
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "%s", response);
     }
+    HTTP_OK(c, response);
 }
 
 /* POST /api/airplane_mode - 飞行模式控制 */
 void handle_airplane_mode(struct mg_connection *c, struct mg_http_message *hm) {
-    if (!check_method(c, hm, "POST")) return;
+    HTTP_CHECK_POST(c, hm);
 
-    /* 解析 JSON: {"enabled": true/false} */
     int enabled = -1;
-    struct mg_str json = hm->body;
-
-    if (strstr(json.buf, "\"enabled\":true") || strstr(json.buf, "\"enabled\": true")) {
-        enabled = 1;
-    } else if (strstr(json.buf, "\"enabled\":false") || strstr(json.buf, "\"enabled\": false")) {
-        enabled = 0;
+    int val = 0;
+    if (mg_json_get_bool(hm->body, "$.enabled", &val)) {
+        enabled = val;
     }
 
     if (enabled == -1) {
-        mg_http_reply(c, 400, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"error\":\"Invalid request body\"}");
+        HTTP_ERROR(c, 400, "Invalid request body");
         return;
     }
 
     if (set_airplane_mode(enabled) == 0) {
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"status\":\"success\",\"message\":\"Airplane mode updated successfully\"}");
+        HTTP_SUCCESS(c, "Airplane mode updated successfully");
     } else {
-        mg_http_reply(c, 500, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"error\":\"Failed to set airplane mode: AT command failed\"}");
+        HTTP_ERROR(c, 500, "Failed to set airplane mode: AT command failed");
     }
 }
 
 /* POST /api/device_control - 设备控制 */
 void handle_device_control(struct mg_connection *c, struct mg_http_message *hm) {
-    if (!check_method(c, hm, "POST")) return;
+    HTTP_CHECK_POST(c, hm);
 
     char action[32] = {0};
-
-    /* 解析 JSON: {"action": "reboot"} 或 {"action": "poweroff"} */
-    extract_json_string(hm->body.buf, "action", action, sizeof(action));
+    char *action_str = mg_json_get_str(hm->body, "$.action");
+    if (action_str) { strncpy(action, action_str, sizeof(action) - 1); free(action_str); }
 
     if (strlen(action) == 0) {
-        mg_http_reply(c, 400, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"error\":\"Action parameter is required\"}");
+        HTTP_ERROR(c, 400, "Action parameter is required");
         return;
     }
 
     if (strcmp(action, "reboot") == 0) {
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"status\":\"success\",\"message\":\"Reboot command sent\"}");
+        HTTP_SUCCESS(c, "Reboot command sent");
         device_reboot();
     } else if (strcmp(action, "poweroff") == 0) {
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"status\":\"success\",\"message\":\"Poweroff command sent\"}");
+        HTTP_SUCCESS(c, "Poweroff command sent");
         device_poweroff();
     } else {
-        mg_http_reply(c, 400, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"error\":\"Invalid action. Must be 'reboot' or 'poweroff'\"}");
+        HTTP_ERROR(c, 400, "Invalid action. Must be 'reboot' or 'poweroff'");
     }
 }
 
 /* POST /api/clear_cache - 清除缓存 */
 void handle_clear_cache(struct mg_connection *c, struct mg_http_message *hm) {
-    if (!check_method(c, hm, "POST")) return;
+    HTTP_CHECK_POST(c, hm);
 
     if (clear_cache() == 0) {
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"status\":\"success\",\"message\":\"Cache cleared successfully\"}");
+        HTTP_SUCCESS(c, "Cache cleared successfully");
     } else {
-        mg_http_reply(c, 500, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n", 
-            "{\"error\":\"Failed to clear cache\"}");
+        HTTP_ERROR(c, 500, "Failed to clear cache");
     }
 }
 
@@ -513,7 +409,7 @@ static int is_5g_network(void) {
 
 /* GET /api/current_band - 获取当前连接频段 */
 void handle_get_current_band(struct mg_connection *c, struct mg_http_message *hm) {
-    if (!check_method(c, hm, "GET")) return;
+    HTTP_CHECK_GET(c, hm);
 
     char net_type[32] = "N/A";
     char band[32] = "N/A";
@@ -601,10 +497,7 @@ void handle_get_current_band(struct mg_connection *c, struct mg_http_message *hm
         "}}",
         net_type, band, arfcn, pci, rsrp, rsrq, sinr);
 
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "%s", response);
+    HTTP_OK(c, response);
 }
 
 
@@ -613,22 +506,13 @@ void handle_get_current_band(struct mg_connection *c, struct mg_http_message *hm
 
 /* GET /api/sms - 获取短信列表 */
 void handle_sms_list(struct mg_connection *c, struct mg_http_message *hm) {
-    /* 处理 OPTIONS 预检请求 */
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     SmsMessage messages[100];
     int count = sms_get_list(messages, 100);
     
     if (count < 0) {
-        mg_http_reply(c, 500, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"获取短信列表失败\"}");
+        HTTP_ERROR(c, 500, "获取短信列表失败");
         return;
     }
 
@@ -654,138 +538,69 @@ void handle_sms_list(struct mg_connection *c, struct mg_http_message *hm) {
     
     offset += snprintf(json + offset, sizeof(json) - offset, "]");
 
-    mg_http_reply(c, 200, 
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "%s", json);
+    HTTP_OK(c, json);
 }
 
 /* POST /api/sms/send - 发送短信 */
 void handle_sms_send(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     char recipient[64] = {0};
     char content[1024] = {0};
     
-    /* 解析JSON */
-    struct mg_str json = hm->body;
-    char *p;
-    
-    /* 提取 recipient */
-    p = strstr(json.buf, "\"recipient\"");
-    if (p) {
-        p = strchr(p, ':');
-        if (p) {
-            p = strchr(p, '"');
-            if (p) {
-                p++;
-                char *end = strchr(p, '"');
-                if (end) {
-                    size_t len = end - p;
-                    if (len < sizeof(recipient)) memcpy(recipient, p, len);
-                }
-            }
-        }
-    }
-    
-    /* 提取 content */
-    p = strstr(json.buf, "\"content\"");
-    if (p) {
-        p = strchr(p, ':');
-        if (p) {
-            p = strchr(p, '"');
-            if (p) {
-                p++;
-                char *end = strchr(p, '"');
-                if (end) {
-                    size_t len = end - p;
-                    if (len < sizeof(content)) memcpy(content, p, len);
-                }
-            }
-        }
-    }
+    /* 使用mongoose内置JSON解析 */
+    char *r = mg_json_get_str(hm->body, "$.recipient");
+    char *ct = mg_json_get_str(hm->body, "$.content");
+    if (r) { strncpy(recipient, r, sizeof(recipient) - 1); free(r); }
+    if (ct) { strncpy(content, ct, sizeof(content) - 1); free(ct); }
 
     if (strlen(recipient) == 0 || strlen(content) == 0) {
-        mg_http_reply(c, 400, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"收件人和内容不能为空\"}");
+        HTTP_ERROR(c, 400, "收件人和内容不能为空");
         return;
     }
 
     char result_path[256] = {0};
+    char response[512];
     if (sms_send(recipient, content, result_path, sizeof(result_path)) == 0) {
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
+        snprintf(response, sizeof(response),
             "{\"status\":\"success\",\"message\":\"短信发送成功\",\"path\":\"%s\"}", result_path);
+        HTTP_OK(c, response);
     } else {
-        mg_http_reply(c, 500, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"短信发送失败\"}");
+        HTTP_ERROR(c, 500, "短信发送失败");
     }
 }
 
 /* DELETE /api/sms/:id - 删除短信 */
 void handle_sms_delete(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_DELETE(c, hm);
 
-    /* 从URL提取ID: /api/sms/123 */
     int id = 0;
     const char *uri = hm->uri.buf;
     const char *id_start = strstr(uri, "/api/sms/");
     if (id_start) {
-        id_start += 9;  /* 跳过 "/api/sms/" */
+        id_start += 9;
         id = atoi(id_start);
     }
 
     if (id <= 0) {
-        mg_http_reply(c, 400, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"无效的短信ID\"}");
+        HTTP_ERROR(c, 400, "无效的短信ID");
         return;
     }
 
     if (sms_delete(id) == 0) {
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"status\":\"success\",\"message\":\"短信已删除\"}");
+        HTTP_SUCCESS(c, "短信已删除");
     } else {
-        mg_http_reply(c, 500, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"删除短信失败\"}");
+        HTTP_ERROR(c, 500, "删除短信失败");
     }
 }
 
 /* GET /api/sms/webhook - 获取Webhook配置 */
 void handle_sms_webhook_get(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     WebhookConfig config;
     if (sms_get_webhook_config(&config) != 0) {
-        mg_http_reply(c, 500, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"获取配置失败\"}");
+        HTTP_ERROR(c, 500, "获取配置失败");
         return;
     }
 
@@ -799,10 +614,7 @@ void handle_sms_webhook_get(struct mg_connection *c, struct mg_http_message *hm)
         "{\"enabled\":%s,\"platform\":\"%s\",\"url\":\"%s\",\"body\":\"%s\",\"headers\":\"%s\"}",
         config.enabled ? "true" : "false", config.platform, config.url, escaped_body, escaped_headers);
 
-    mg_http_reply(c, 200, 
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "%s", json);
+    HTTP_OK(c, json);
 }
 
 /* 智能解析JSON字符串值 - 正确处理转义字符 */
@@ -851,12 +663,7 @@ static int parse_json_string_field(const char *json, const char *key, char *out,
 
 /* POST /api/sms/webhook - 保存Webhook配置 */
 void handle_sms_webhook_save(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     WebhookConfig config = {0};
     
@@ -878,57 +685,32 @@ void handle_sms_webhook_save(struct mg_connection *c, struct mg_http_message *hm
     parse_json_string_field(json_buf, "headers", config.headers, sizeof(config.headers));
 
     if (sms_save_webhook_config(&config) == 0) {
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"status\":\"success\",\"message\":\"配置已保存\"}");
+        HTTP_SUCCESS(c, "配置已保存");
     } else {
-        mg_http_reply(c, 500, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"保存配置失败\"}");
+        HTTP_ERROR(c, 500, "保存配置失败");
     }
 }
 
 /* POST /api/sms/webhook/test - 测试Webhook */
 void handle_sms_webhook_test(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     if (sms_test_webhook() == 0) {
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"status\":\"success\",\"message\":\"测试通知已发送\"}");
+        HTTP_SUCCESS(c, "测试通知已发送");
     } else {
-        mg_http_reply(c, 500, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"Webhook未启用或URL为空\"}");
+        HTTP_ERROR(c, 500, "Webhook未启用或URL为空");
     }
 }
 
 /* GET /api/sms/sent - 获取发送记录列表 */
 void handle_sms_sent_list(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     SentSmsMessage messages[150];
     int count = sms_get_sent_list(messages, 150);
     
     if (count < 0) {
-        mg_http_reply(c, 500, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"获取发送记录失败\"}");
+        HTTP_ERROR(c, 500, "获取发送记录失败");
         return;
     }
 
@@ -962,77 +744,56 @@ void handle_sms_sent_list(struct mg_connection *c, struct mg_http_message *hm) {
     
     snprintf(json + offset, sizeof(json) - offset, "]");
     
-    mg_http_reply(c, 200, 
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "%s", json);
+    HTTP_OK(c, json);
 }
 
 /* GET /api/sms/config - 获取短信配置 */
 void handle_sms_config_get(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     int max_count = sms_get_max_count();
     int max_sent_count = sms_get_max_sent_count();
     
-    mg_http_reply(c, 200, 
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "{\"max_count\":%d,\"max_sent_count\":%d}", max_count, max_sent_count);
+    char json[128];
+    snprintf(json, sizeof(json), "{\"max_count\":%d,\"max_sent_count\":%d}", max_count, max_sent_count);
+    HTTP_OK(c, json);
 }
 
 /* POST /api/sms/config - 保存短信配置 */
 void handle_sms_config_save(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
-    struct mg_str body = hm->body;
     double val = 0;
     int max_count = sms_get_max_count();
     int max_sent_count = sms_get_max_sent_count();
     
-    if (mg_json_get_num(body, "$.max_count", &val)) {
+    if (mg_json_get_num(hm->body, "$.max_count", &val)) {
         max_count = (int)val;
     }
-    if (mg_json_get_num(body, "$.max_sent_count", &val)) {
+    if (mg_json_get_num(hm->body, "$.max_sent_count", &val)) {
         max_sent_count = (int)val;
     }
     
     if (max_count < 10 || max_count > 150) {
-        mg_http_reply(c, 400, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"收件箱最大存储数量必须在10-150之间\"}");
+        HTTP_ERROR(c, 400, "收件箱最大存储数量必须在10-150之间");
         return;
     }
     if (max_sent_count < 1 || max_sent_count > 50) {
-        mg_http_reply(c, 400, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"发件箱最大存储数量必须在1-50之间\"}");
+        HTTP_ERROR(c, 400, "发件箱最大存储数量必须在1-50之间");
         return;
     }
 
     sms_set_max_count(max_count);
     sms_set_max_sent_count(max_sent_count);
     
-    mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-        "{\"status\":\"success\",\"max_count\":%d,\"max_sent_count\":%d}", max_count, max_sent_count);
+    char json[128];
+    snprintf(json, sizeof(json), "{\"status\":\"success\",\"max_count\":%d,\"max_sent_count\":%d}", max_count, max_sent_count);
+    HTTP_OK(c, json);
 }
 
 /* DELETE /api/sms/sent/:id - 删除发送记录 */
 void handle_sms_sent_delete(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: DELETE, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_DELETE(c, hm);
 
     int id = 0;
     const char *uri = hm->uri.buf;
@@ -1043,66 +804,45 @@ void handle_sms_sent_delete(struct mg_connection *c, struct mg_http_message *hm)
     }
 
     if (id <= 0) {
-        mg_http_reply(c, 400, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"无效的ID\"}");
+        HTTP_ERROR(c, 400, "无效的ID");
         return;
     }
 
     if (sms_delete_sent(id) == 0) {
-        mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"status\":\"success\"}");
+        HTTP_OK(c, "{\"status\":\"success\"}");
     } else {
-        mg_http_reply(c, 500, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"删除失败\"}");
+        HTTP_ERROR(c, 500, "删除失败");
     }
 }
 
 /* GET /api/sms/fix - 获取短信接收修复开关状态 */
 void handle_sms_fix_get(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     int enabled = sms_get_fix_enabled();
-    
-    mg_http_reply(c, 200, 
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "{\"enabled\":%s}", enabled ? "true" : "false");
+    char json[64];
+    snprintf(json, sizeof(json), "{\"enabled\":%s}", enabled ? "true" : "false");
+    HTTP_OK(c, json);
 }
 
 /* POST /api/sms/fix - 设置短信接收修复开关 */
 void handle_sms_fix_set(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
-    struct mg_str body = hm->body;
     int enabled = 0;
-    
-    /* 解析 enabled 字段 */
-    if (strstr(body.buf, "\"enabled\":true") || strstr(body.buf, "\"enabled\": true")) {
-        enabled = 1;
+    int val = 0;
+    if (mg_json_get_bool(hm->body, "$.enabled", &val)) {
+        enabled = val;
     }
     
     if (sms_set_fix_enabled(enabled) == 0) {
-        mg_http_reply(c, 200, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"status\":\"success\",\"enabled\":%s,\"message\":\"%s\"}", 
+        char json[128];
+        snprintf(json, sizeof(json), "{\"status\":\"success\",\"enabled\":%s,\"message\":\"%s\"}", 
             enabled ? "true" : "false",
             enabled ? "短信接收修复已开启" : "短信接收修复已关闭");
+        HTTP_OK(c, json);
     } else {
-        mg_http_reply(c, 500, 
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"设置失败，AT命令执行错误\"}");
+        HTTP_ERROR(c, 500, "设置失败，AT命令执行错误");
     }
 }
 
@@ -1111,40 +851,27 @@ void handle_sms_fix_set(struct mg_connection *c, struct mg_http_message *hm) {
 
 /* GET /api/update/version - 获取当前版本 */
 void handle_update_version(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
-    mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-        "{\"version\":\"%s\"}", update_get_version());
+    char json[128];
+    snprintf(json, sizeof(json), "{\"version\":\"%s\"}", update_get_version());
+    HTTP_OK(c, json);
 }
 
 /* POST /api/update/upload - 上传更新包 */
 void handle_update_upload(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
-    /* 解析multipart表单获取文件 */
     struct mg_http_part part;
     size_t ofs = 0;
     
     while ((ofs = mg_http_next_multipart(hm->body, ofs, &part)) > 0) {
         if (part.filename.len > 0) {
-            /* 清理旧文件 */
             update_cleanup();
             
-            /* 保存上传的文件 */
             FILE *fp = fopen(UPDATE_ZIP_PATH, "wb");
             if (!fp) {
-                mg_http_reply(c, 500, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-                    "{\"error\":\"无法创建文件\"}");
+                HTTP_ERROR(c, 500, "无法创建文件");
                 return;
             }
             
@@ -1152,101 +879,75 @@ void handle_update_upload(struct mg_connection *c, struct mg_http_message *hm) {
             fclose(fp);
             
             printf("更新包上传成功: %lu bytes\n", (unsigned long)part.body.len);
-            mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-                "{\"status\":\"success\",\"message\":\"上传成功\",\"size\":%lu}", (unsigned long)part.body.len);
+            char json[128];
+            snprintf(json, sizeof(json), "{\"status\":\"success\",\"message\":\"上传成功\",\"size\":%lu}", (unsigned long)part.body.len);
+            HTTP_OK(c, json);
             return;
         }
     }
     
-    mg_http_reply(c, 400, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-        "{\"error\":\"未找到上传文件\"}");
+    HTTP_ERROR(c, 400, "未找到上传文件");
 }
 
 /* POST /api/update/download - 从URL下载更新包 */
 void handle_update_download(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     char url[512] = {0};
-    extract_json_string(hm->body.buf, "url", url, sizeof(url));
+    char *url_str = mg_json_get_str(hm->body, "$.url");
+    if (url_str) { strncpy(url, url_str, sizeof(url) - 1); free(url_str); }
     
     if (strlen(url) == 0) {
-        mg_http_reply(c, 400, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"URL参数不能为空\"}");
+        HTTP_ERROR(c, 400, "URL参数不能为空");
         return;
     }
 
     if (update_download(url) == 0) {
-        mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"status\":\"success\",\"message\":\"下载成功\"}");
+        HTTP_SUCCESS(c, "下载成功");
     } else {
-        mg_http_reply(c, 500, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"下载失败\"}");
+        HTTP_ERROR(c, 500, "下载失败");
     }
 }
 
 /* POST /api/update/extract - 解压更新包 */
 void handle_update_extract(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     if (update_extract() == 0) {
-        mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"status\":\"success\",\"message\":\"解压成功\"}");
+        HTTP_SUCCESS(c, "解压成功");
     } else {
-        mg_http_reply(c, 500, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"解压失败\"}");
+        HTTP_ERROR(c, 500, "解压失败");
     }
 }
 
 /* POST /api/update/install - 执行安装并重启 */
 void handle_update_install(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     char output[2048] = {0};
     
     if (update_install(output, sizeof(output)) == 0) {
-        /* 先返回响应 */
         char escaped[1024];
         json_escape_string(output, escaped, sizeof(escaped));
-        mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"status\":\"success\",\"message\":\"安装成功，正在重启...\",\"output\":\"%s\"}", escaped);
-        /* 刷新连接 */
+        char json[2048];
+        snprintf(json, sizeof(json), "{\"status\":\"success\",\"message\":\"安装成功，正在重启...\",\"output\":\"%s\"}", escaped);
+        HTTP_OK(c, json);
         c->is_draining = 1;
-        /* 延迟2秒后重启 */
         sleep(2);
         device_reboot();
     } else {
         char escaped[1024];
         json_escape_string(output, escaped, sizeof(escaped));
-        mg_http_reply(c, 500, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"安装失败\",\"output\":\"%s\"}", escaped);
+        char json[2048];
+        snprintf(json, sizeof(json), "{\"error\":\"安装失败\",\"output\":\"%s\"}", escaped);
+        HTTP_JSON(c, 500, json);
     }
 }
 
 /* GET /api/update/check - 检查远程版本 */
 void handle_update_check(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_ANY(c, hm);
 
-    /* 使用编译时嵌入的默认URL */
     const char *check_url = UPDATE_CHECK_URL;
 
     update_info_t info;
@@ -1257,14 +958,15 @@ void handle_update_check(struct mg_connection *c, struct mg_http_message *hm) {
         char escaped_changelog[2048];
         json_escape_string(info.changelog, escaped_changelog, sizeof(escaped_changelog));
         
-        mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+        char json[4096];
+        snprintf(json, sizeof(json),
             "{\"current_version\":\"%s\",\"latest_version\":\"%s\",\"has_update\":%s,"
             "\"url\":\"%s\",\"changelog\":\"%s\",\"size\":%lu,\"required\":%s}",
             current, info.version, has_update ? "true" : "false",
             info.url, escaped_changelog, (unsigned long)info.size, info.required ? "true" : "false");
+        HTTP_OK(c, json);
     } else {
-        mg_http_reply(c, 500, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"error\":\"检查版本失败\"}");
+        HTTP_ERROR(c, 500, "检查版本失败");
     }
 }
 
@@ -1272,12 +974,7 @@ void handle_update_check(struct mg_connection *c, struct mg_http_message *hm) {
 
 /* GET /api/get/time - 获取系统时间 */
 void handle_get_system_time(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
@@ -1289,23 +986,19 @@ void handle_get_system_time(struct mg_connection *c, struct mg_http_message *hm)
     strftime(date, sizeof(date), "%Y-%m-%d", tm_info);
     strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
     
-    mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+    char json[256];
+    snprintf(json, sizeof(json),
         "{\"Code\":0,\"Data\":{\"datetime\":\"%s\",\"date\":\"%s\",\"time\":\"%s\",\"timestamp\":%ld}}",
         datetime, date, time_str, (long)now);
+    HTTP_OK(c, json);
 }
 
 /* POST /api/set/time - NTP同步系统时间 */
 void handle_set_system_time(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     char output[512];
     
-    /* NTP 服务器列表，依次尝试 */
     const char *ntp_servers[] = {
         "ntp.aliyun.com",
         "pool.ntp.org",
@@ -1325,12 +1018,11 @@ void handle_set_system_time(struct mg_connection *c, struct mg_http_message *hm)
     }
     
     if (success) {
-        /* 同步到硬件时钟 */
         run_command(output, sizeof(output), "hwclock", "-w", NULL);
-        mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"Code\":0,\"Data\":\"NTP同步成功\",\"server\":\"%s\"}", used_server);
+        char json[128];
+        snprintf(json, sizeof(json), "{\"Code\":0,\"Data\":\"NTP同步成功\",\"server\":\"%s\"}", used_server);
+        HTTP_OK(c, json);
     } else {
-        mg_http_reply(c, 500, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
-            "{\"Code\":1,\"Error\":\"所有NTP服务器同步失败\"}");
+        HTTP_OK(c, "{\"Code\":1,\"Error\":\"所有NTP服务器同步失败\"}");
     }
 }

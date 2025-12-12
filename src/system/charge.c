@@ -18,6 +18,7 @@
 #include "mongoose.h"
 #include "charge.h"
 #include "sms.h"  /* 使用通用配置函数 */
+#include "http_utils.h"
 
 #define BATTERY_UEVENT "/sys/class/power_supply/battery/uevent"
 #define BATTERY_STOP_CHARGE "/sys/class/power_supply/battery/charger.0/stop_charge"
@@ -304,14 +305,9 @@ void init_charge(void) {
 
 /* GET/POST /api/charge/config - 获取/设置充电配置 */
 void handle_charge_config(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_ANY(c, hm);
 
-    if (hm->method.len == 3 && memcmp(hm->method.buf, "GET", 3) == 0) {
+    if (http_is_method(hm, "GET")) {
         /* GET - 获取配置和电池状态 */
         BatteryInfo battery;
         get_battery_info(&battery);
@@ -334,29 +330,21 @@ void handle_charge_config(struct mg_connection *c, struct mg_http_message *hm) {
             (double)battery.voltage_now / 1000000.0,
             (double)battery.current_now / 1000000.0);
 
-        mg_http_reply(c, 200,
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "%s", json);
-    } else if (hm->method.len == 4 && memcmp(hm->method.buf, "POST", 4) == 0) {
+        HTTP_OK(c, json);
+    } else if (http_is_method(hm, "POST")) {
         /* POST - 设置配置 */
         int enabled = 0, start = 20, stop = 80;
+        double val = 0;
+        int bval = 0;
 
-        /* 解析 JSON */
-        if (strstr(hm->body.buf, "\"enabled\":true") || strstr(hm->body.buf, "\"enabled\": true")) {
-            enabled = 1;
-        }
-        char *p = strstr(hm->body.buf, "\"startThreshold\"");
-        if (p) { p = strchr(p, ':'); if (p) start = atoi(p + 1); }
-        p = strstr(hm->body.buf, "\"stopThreshold\"");
-        if (p) { p = strchr(p, ':'); if (p) stop = atoi(p + 1); }
+        /* 使用mongoose内置JSON解析 */
+        if (mg_json_get_bool(hm->body, "$.enabled", &bval)) enabled = bval;
+        if (mg_json_get_num(hm->body, "$.startThreshold", &val)) start = (int)val;
+        if (mg_json_get_num(hm->body, "$.stopThreshold", &val)) stop = (int)val;
 
         /* 验证阈值 */
         if (enabled && (start < 0 || start > 100 || stop < 0 || stop > 100 || start >= stop)) {
-            mg_http_reply(c, 200,
-                "Content-Type: application/json\r\n"
-                "Access-Control-Allow-Origin: *\r\n",
-                "{\"Code\":1,\"Error\":\"无效的阈值设置\",\"Data\":null}");
+            HTTP_OK(c, "{\"Code\":1,\"Error\":\"无效的阈值设置\",\"Data\":null}");
             return;
         }
 
@@ -376,57 +364,32 @@ void handle_charge_config(struct mg_connection *c, struct mg_http_message *hm) {
             stop_charge_monitor();
         }
 
-        mg_http_reply(c, 200,
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"Code\":0,\"Error\":\"\",\"Data\":\"充电配置已更新\"}");
+        HTTP_OK(c, "{\"Code\":0,\"Error\":\"\",\"Data\":\"充电配置已更新\"}");
     }
 }
 
 /* POST /api/charge/on - 手动开启充电 */
 void handle_charge_on(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     if (set_charging(1) != 0) {
-        mg_http_reply(c, 200,
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"Code\":1,\"Error\":\"开启充电失败\",\"Data\":null}");
+        HTTP_OK(c, "{\"Code\":1,\"Error\":\"开启充电失败\",\"Data\":null}");
         return;
     }
 
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "{\"Code\":0,\"Error\":\"\",\"Data\":\"已开启充电\"}");
+    HTTP_OK(c, "{\"Code\":0,\"Error\":\"\",\"Data\":\"已开启充电\"}");
 }
 
 /* POST /api/charge/off - 手动停止充电 */
 void handle_charge_off(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_POST(c, hm);
 
     if (set_charging(0) != 0) {
-        mg_http_reply(c, 200,
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"Code\":1,\"Error\":\"停止充电失败\",\"Data\":null}");
+        HTTP_OK(c, "{\"Code\":1,\"Error\":\"停止充电失败\",\"Data\":null}");
         return;
     }
 
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "{\"Code\":0,\"Error\":\"\",\"Data\":\"已停止充电\"}");
+    HTTP_OK(c, "{\"Code\":0,\"Error\":\"\",\"Data\":\"已停止充电\"}");
 }
 
 

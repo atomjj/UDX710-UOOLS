@@ -11,6 +11,7 @@
 #include "mongoose.h"
 #include "reboot.h"
 #include "exec_utils.h"
+#include "http_utils.h"
 
 #define CRON_FILE "/var/spool/cron/crontabs/root"
 
@@ -38,12 +39,7 @@ static int read_first_reboot_job(char *job, size_t size) {
 
 /* GET /api/get/first-reboot - 获取定时重启配置 */
 void handle_get_first_reboot(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     char job[256] = {0};
     time_t now = time(NULL);
@@ -62,20 +58,12 @@ void handle_get_first_reboot(struct mg_connection *c, struct mg_http_message *hm
             "{\"success\":false,\"job\":\"\",\"time\":\"%s\"}", time_str);
     }
 
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "%s", json);
+    HTTP_OK(c, json);
 }
 
 /* GET /api/set/reboot - 设置定时重启 */
 void handle_set_reboot(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     char day[32] = {0}, hour[8] = {0}, minute[8] = {0};
     struct mg_str query = hm->query;
@@ -92,10 +80,7 @@ void handle_set_reboot(struct mg_connection *c, struct mg_http_message *hm) {
     }
 
     if (strlen(day) == 0 || strlen(hour) == 0 || strlen(minute) == 0) {
-        mg_http_reply(c, 400,
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"success\":false,\"msg\":\"Missing parameters\"}");
+        HTTP_JSON(c, 400, "{\"success\":false,\"msg\":\"Missing parameters\"}");
         return;
     }
 
@@ -112,35 +97,21 @@ void handle_set_reboot(struct mg_connection *c, struct mg_http_message *hm) {
     /* 添加新任务 */
     snprintf(cmd, sizeof(cmd), "echo '%s %s * * %s /sbin/reboot' >> %s", minute, hour, day, CRON_FILE);
     if (run_command(output, sizeof(output), "sh", "-c", cmd, NULL) != 0) {
-        mg_http_reply(c, 500,
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"success\":false,\"msg\":\"Failed to add job\"}");
+        HTTP_JSON(c, 500, "{\"success\":false,\"msg\":\"Failed to add job\"}");
         return;
     }
 
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "{\"success\":true,\"msg\":\"Reboot job added\"}");
+    HTTP_OK(c, "{\"success\":true,\"msg\":\"Reboot job added\"}");
 }
 
 /* GET /api/claen/cron - 清除定时任务 */
 void handle_clear_cron(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     char output[256];
     char cmd[256];
     snprintf(cmd, sizeof(cmd), "sed -i '/reboot/d' %s 2>/dev/null || true", CRON_FILE);
     run_command(output, sizeof(output), "sh", "-c", cmd, NULL);
 
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "{\"success\":true,\"msg\":\"Clean Reboot\"}");
+    HTTP_OK(c, "{\"success\":true,\"msg\":\"Clean Reboot\"}");
 }

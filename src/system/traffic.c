@@ -15,6 +15,7 @@
 #include "exec_utils.h"
 #include "sms.h"  /* 使用通用配置函数 */
 #include "airplane.h"  /* 飞行模式控制 */
+#include "http_utils.h"
 
 #define VNSTAT_DB "/var/lib/vnstat/vnstat.db"
 #define NETWORK_IFACE "sipa_eth0"
@@ -138,12 +139,7 @@ void init_traffic(void) {
 
 /* GET /api/get/Total - 获取流量统计 */
 void handle_get_traffic_total(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     long long rx, tx;
     get_traffic_from_vnstat(&rx, &tx);
@@ -158,39 +154,23 @@ void handle_get_traffic_total(struct mg_connection *c, struct mg_http_message *h
         "{\"rx\":\"%s\",\"tx\":\"%s\",\"total\":\"%s\"}",
         rx_str, tx_str, total_str);
 
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "%s", json);
+    HTTP_OK(c, json);
 }
 
 /* GET /api/get/set - 获取流量配置 */
 void handle_get_traffic_config(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     TrafficConfig config = read_traffic_config();
     char json[128];
     snprintf(json, sizeof(json), "{\"much\":%lld,\"switch\":%d}", config.much, config.switch_on);
 
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "%s", json);
+    HTTP_OK(c, json);
 }
 
 /* GET /api/set/total - 设置流量限制 */
 void handle_set_traffic_limit(struct mg_connection *c, struct mg_http_message *hm) {
-    if (hm->method.len == 7 && memcmp(hm->method.buf, "OPTIONS", 7) == 0) {
-        mg_http_reply(c, 200, "Access-Control-Allow-Origin: *\r\n"
-                              "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
-                              "Access-Control-Allow-Headers: Content-Type\r\n", "");
-        return;
-    }
+    HTTP_CHECK_GET(c, hm);
 
     /* 解析 URL 参数 */
     char switch_str[16] = {0}, much_str[32] = {0};
@@ -211,10 +191,7 @@ void handle_set_traffic_limit(struct mg_connection *c, struct mg_http_message *h
         char output[256];
         run_command(output, sizeof(output), "rm", "-f", VNSTAT_DB, NULL);
         init_vnstat_db();
-        mg_http_reply(c, 200,
-            "Content-Type: application/json\r\n"
-            "Access-Control-Allow-Origin: *\r\n",
-            "{\"success\":true,\"msg\":\"Clean ok\"}");
+        HTTP_OK(c, "{\"success\":true,\"msg\":\"Clean ok\"}");
         return;
     }
 
@@ -232,8 +209,5 @@ void handle_set_traffic_limit(struct mg_connection *c, struct mg_http_message *h
         pthread_detach(flow_control_thread);
     }
 
-    mg_http_reply(c, 200,
-        "Content-Type: application/json\r\n"
-        "Access-Control-Allow-Origin: *\r\n",
-        "{\"success\":true,\"msg\":\"added ok\"}");
+    HTTP_OK(c, "{\"success\":true,\"msg\":\"added ok\"}");
 } 

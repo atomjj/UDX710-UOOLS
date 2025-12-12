@@ -18,6 +18,7 @@
 #include "reboot.h"
 #include "charge.h"
 #include "sms.h"
+#include "http_utils.h"
 
 /* 嵌入式文件系统声明 (packed_fs.c) */
 extern int serve_packed_file(struct mg_connection *c, struct mg_http_message *hm);
@@ -30,20 +31,6 @@ static volatile int g_running = 0;
 static void signal_handler(int sig) {
     (void)sig;
     g_running = 0;
-}
-
-
-
-/* 发送 JSON 响应 */
-void send_json_response(struct mg_connection *c, int status, const char *json) {
-    mg_http_reply(c, status, "Content-Type: application/json\r\n", "%s", json);
-}
-
-/* 发送错误响应 */
-void send_error_response(struct mg_connection *c, int status, const char *error) {
-    char buf[256];
-    snprintf(buf, sizeof(buf), "{\"error\":\"%s\"}", error);
-    send_json_response(c, status, buf);
 }
 
 
@@ -204,7 +191,7 @@ static void http_handler(struct mg_connection *c, int ev, void *ev_data) {
         }
         /* 未知 API 路由 */
         else {
-            send_error_response(c, 404, "Endpoint not found");
+            HTTP_ERROR(c, 404, "Endpoint not found");
         }
     }
 }

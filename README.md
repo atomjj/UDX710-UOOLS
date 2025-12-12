@@ -42,9 +42,17 @@ Lightweight, efficient, and perfect for resource-constrained embedded devices!
 
 ## 📸 Screenshots
 
-| Home | Network | Advanced Network | System Settings |
-|:---:|:---:|:---:|:---:|
-| ![Home](docs/screenshot1.png) | ![Network](docs/screenshot2.png) | ![Advanced](docs/screenshot3.png) | ![System](docs/screenshot4.png) |
+| System Monitor | Network Management | SMS Management |
+|:---:|:---:|:---:|
+| ![System Monitor](docs/screenshot1.png) | ![Network Management](docs/screenshot2.png) | ![SMS Management](docs/screenshot3.png) |
+
+| Traffic Statistics | Charge Control | System Update |
+|:---:|:---:|:---:|
+| ![Traffic Statistics](docs/screenshot4.png) | ![Charge Control](docs/screenshot5.png) | ![System Update](docs/screenshot6.png) |
+
+| AT Debug Terminal | USB Mode | System Settings |
+|:---:|:---:|:---:|
+| ![AT Debug Terminal](docs/screenshot7.png) | ![USB Mode](docs/screenshot8.png) | ![System Settings](docs/screenshot9.png) |
 
 ## Featu
 
